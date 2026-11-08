@@ -1,0 +1,63 @@
+name: seal-build
+
+# Build-and-pack only: the test suite runs on Travis (.travis.yml).
+on:
+  workflow_dispatch: {}
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Compile check
+        run: go build -v .
+        env:
+          GO111MODULE: 'off'
+          GOPATH: ${{ runner.temp }}/gopath
+
+      - name: Pack module zip (golang.org/x/mod/zip.CreateFromDir)
+        run: |
+          set -euo pipefail
+          # Copy the module tree without the seal-build workflow (upstream ships no .github)
+          mkdir -p "$RUNNER_TEMP/modsrc" "$RUNNER_TEMP/helper" dist
+          tar --exclude=./.git --exclude=./.github --exclude=./dist -cf - . | tar -C "$RUNNER_TEMP/modsrc" -xf -
+          cat > "$RUNNER_TEMP/helper/main.go" <<'EOF'
+          package main
+
+          import (
+            "log"
+            "os"
+
+            "golang.org/x/mod/module"
+            "golang.org/x/mod/zip"
+          )
+
+          func main() {
+            m := module.Version{Path: os.Args[1], Version: os.Args[2]}
+            f, err := os.Create(os.Args[4])
+            if err != nil {
+              log.Fatal(err)
+            }
+            defer f.Close()
+            if err := zip.CreateFromDir(f, m, os.Args[3]); err != nil {
+              log.Fatal(err)
+            }
+          }
+          EOF
+          cd "$RUNNER_TEMP/helper"
+          go mod init seal.local/helper
+          go get golang.org/x/mod@v0.17.0
+          go run . github.com/Masterminds/goutils v1.1.0 "$RUNNER_TEMP/modsrc" "$GITHUB_WORKSPACE/dist/v1.1.0.zip"
+          unzip -l "$GITHUB_WORKSPACE/dist/v1.1.0.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: go-module-zip
+          path: dist/v1.1.0.zip
+          if-no-files-found: error
